@@ -1,0 +1,1226 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>OmniPlan Productivity App</title>
+    
+    <!-- PWA Settings -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#4f46e5">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/2666/2666505.png">
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Import Maps for Modules -->
+    <script type="importmap">
+    {
+        "imports": {
+            "react": "https://esm.sh/react@18.2.0",
+            "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+            "lucide-react": "https://esm.sh/lucide-react@0.292.0",
+            "firebase/app": "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js",
+            "firebase/auth": "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js",
+            "firebase/firestore": "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js"
+        }
+    }
+    </script>
+
+    <style>
+        /* Custom Scrollbar */
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; height: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background-color: #cbd5e1; border-radius: 20px; }
+        
+        /* Prevent pull-to-refresh and selection on mobile for app-like feel */
+        body { 
+            overscroll-behavior-y: none; 
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+        }
+        input, textarea { user-select: text; }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800">
+    <div id="root"></div>
+
+    <script>
+        // Register Service Worker for PWA
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./service-worker.js')
+                    .then(registration => console.log('ServiceWorker registered'))
+                    .catch(err => console.log('ServiceWorker failed: ', err));
+            });
+        }
+    </script>
+
+    <script type="text/babel" data-type="module">
+        import React, { useState, useEffect, useRef } from 'react';
+        import ReactDOM from 'react-dom/client';
+        import { 
+            Calendar as CalendarIcon, CheckCircle, Circle, Plus, Trash2, 
+            ChevronLeft, ChevronRight, Zap, Award, User, Target, 
+            PenTool, Clock, Grid, Layout, X, Play, Pause, RotateCcw,
+            Volume2, VolumeX, Save, Moon, Sun, Sword, Heart, Shield,
+            MoreHorizontal, AlertCircle, LayoutList, Book, Palette, Type, LogOut, LogIn
+        } from 'lucide-react';
+
+        // --- FIREBASE IMPORTS ---
+        import { initializeApp } from "firebase/app";
+        import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from "firebase/auth";
+        import { getFirestore, doc, setDoc, onSnapshot } from "firebase/firestore";
+
+        // --- FIREBASE CONFIGURATION ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyChLR9pMmY1QCgD2HjJ0GjTGS5mx6tG0N8",
+            authDomain: "lnwlawyer.firebaseapp.com",
+            projectId: "lnwlawyer",
+            storageBucket: "lnwlawyer.firebasestorage.app",
+            messagingSenderId: "105328800542",
+            appId: "1:105328800542:web:69fbb578626c41e6548f0f",
+            measurementId: "G-ZK14PNC90Q"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        const OmniPlan = () => {
+            // --- CONSTANTS ---
+            const HOURS = Array.from({length: 16}, (_, i) => `${(i + 6).toString().padStart(2, '0')}:00`); // 06:00 - 21:00
+            
+            const FONT_SIZES = [
+                { id: 'text-sm', label: 'A', scale: '0.8' },
+                { id: 'text-base', label: 'A', scale: '1.0' },
+                { id: 'text-lg', label: 'A', scale: '1.2' },
+                { id: 'text-xl', label: 'A', scale: '1.5' },
+                { id: 'text-2xl', label: 'A', scale: '1.8' },
+            ];
+
+            const PEN_SIZES = [
+                { id: 2, label: 'XS' },
+                { id: 4, label: 'S' },
+                { id: 6, label: 'M' },
+                { id: 10, label: 'L' },
+                { id: 16, label: 'XL' },
+            ];
+
+            // --- AUTHENTICATION STATE ---
+            const [user, setUser] = useState(null);
+
+            useEffect(() => {
+                const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+                setUser(currentUser);
+                });
+                return () => unsubscribe();
+            }, []);
+
+            const handleLogin = async () => {
+                try {
+                const provider = new GoogleAuthProvider();
+                await signInWithPopup(auth, provider);
+                } catch (error) {
+                console.error("Login failed:", error);
+                alert("การเข้าสู่ระบบล้มเหลว กรุณาตรวจสอบการตั้งค่า Firebase Authentication");
+                }
+            };
+
+            const handleLogout = () => {
+                signOut(auth);
+            };
+
+            // --- CUSTOM HOOK: DATA SYNC (Firestore + LocalStorage Fallback) ---
+            const useUserData = (key, initialValue) => {
+                // Internal state for immediate UI updates
+                const [data, setData] = useState(() => {
+                // Initialize from localStorage first to avoid flash, or initialValue
+                try {
+                    const item = localStorage.getItem(key);
+                    return item ? JSON.parse(item) : initialValue;
+                } catch { return initialValue; }
+                });
+
+                // Sync Logic
+                useEffect(() => {
+                let unsubscribe = () => {};
+
+                if (user) {
+                    // --- ONLINE MODE (Firestore) ---
+                    // Path: users/{uid}/app_data/{key}
+                    const docRef = doc(db, "users", user.uid, "app_data", key);
+                    
+                    unsubscribe = onSnapshot(docRef, (docSnap) => {
+                    if (docSnap.exists()) {
+                        const cloudData = docSnap.data().value;
+                        setData(cloudData);
+                    } else {
+                        setDoc(docRef, { value: data }, { merge: true });
+                    }
+                    });
+                } else {
+                    // --- OFFLINE MODE (LocalStorage) ---
+                    // Load from LS when switching to offline/logout
+                    try {
+                    const item = localStorage.getItem(key);
+                    if (item) setData(JSON.parse(item));
+                    } catch {}
+                }
+
+                return () => unsubscribe();
+                }, [user, key]); // Re-run when user or key changes
+
+                // Custom Setter that updates State + Storage
+                const setSyncedData = (newData) => {
+                // 1. Update UI immediately
+                setData(newData);
+
+                // 2. Persist
+                if (user) {
+                    // Save to Cloud
+                    const docRef = doc(db, "users", user.uid, "app_data", key);
+                    setDoc(docRef, { value: newData }, { merge: true });
+                } else {
+                    // Save to Local
+                    localStorage.setItem(key, JSON.stringify(newData));
+                }
+                };
+
+                return [data, setSyncedData];
+            };
+
+            // --- UTILS ---
+            const formatDateKey = (date) => {
+                const year = date.getFullYear();
+                const month = String(date.getMonth() + 1).padStart(2, '0');
+                const day = String(date.getDate()).padStart(2, '0');
+                return `${year}-${month}-${day}`;
+            };
+
+            // Helper to get dot color based on task status and category
+            const getTaskColor = (task) => {
+                if (task.completed) return 'bg-emerald-500';
+                switch (task.category) {
+                case 'q1': return 'bg-rose-500'; // Do
+                case 'q2': return 'bg-blue-500'; // Schedule
+                case 'q3': return 'bg-amber-500'; // Delegate
+                case 'q4': return 'bg-gray-400'; // Delete
+                default: return 'bg-indigo-400'; // Normal
+                }
+            };
+
+            // --- 2. STATE MANAGEMENT ---
+            const [currentDate, setCurrentDate] = useState(new Date());
+            const [selectedDate, setSelectedDate] = useState(new Date());
+            const [view, setView] = useState('calendar'); 
+            
+            // Use new hook instead of useLocalStorage
+            const [isDarkMode, setIsDarkMode] = useUserData('omni_theme', false);
+            const [activeTab, setActiveTab] = useState('tasks'); 
+
+            // Data (Now Synced with Firebase)
+            const [tasks, setTasks] = useUserData('omni_tasks', {});
+            const [timeBlocks, setTimeBlocks] = useUserData('omni_timeblocks', {}); 
+            const [drawings, setDrawings] = useUserData('omni_drawings', {}); 
+            const [notes, setNotes] = useUserData('omni_notes', {}); 
+            
+            // Notebook State
+            const [notebookMode, setNotebookMode] = useState('text'); 
+            const [notebookPage, setNotebookPage] = useState(1); 
+            
+            // Notebook Customization
+            const [notebookPalette, setNotebookPalette] = useUserData('omni_notebook_palette', ['#ffffff', '#fef3c7', '#f0f9ff', '#f0fdf4', '#fdf2f8', '#1e293b']);
+            const [activePaletteIndex, setActivePaletteIndex] = useState(0);
+            const [notebookColor, setNotebookColor] = useUserData('omni_notebook_color', '#ffffff');
+
+            // Notebook Font
+            const [notebookFontSize, setNotebookFontSize] = useUserData('omni_notebook_font_size', 'text-lg');
+            const [notebookFontColor, setNotebookFontColor] = useUserData('omni_notebook_font_color', '#334155');
+            const [notebookFontPalette, setNotebookFontPalette] = useUserData('omni_notebook_font_palette', ['#334155', '#000000', '#dc2626', '#16a34a', '#2563eb', '#d97706']);
+            const [activeFontPaletteIndex, setActiveFontPaletteIndex] = useState(0);
+
+            // Notebook Pen
+            const [penSize, setPenSize] = useState(4); // Local state for pen size is fine reset per session
+            const [penColor, setPenColor] = useUserData('omni_pen_color', '#334155');
+            const [penPalette, setPenPalette] = useUserData('omni_pen_palette', ['#334155', '#000000', '#ef4444', '#22c55e', '#3b82f6', '#f59e0b']);
+            const [activePenPaletteIndex, setActivePenPaletteIndex] = useState(0);
+            
+            // RPG System
+            const [player, setPlayer] = useUserData('omni_player', {
+                name: 'มือใหม่หัดวางแผน',
+                level: 1,
+                xp: 0,
+                maxXp: 100,
+                hp: 50,
+                maxHp: 50,
+                streak: 0,
+                achievements: []
+            });
+
+            // Focus Mode
+            const [isZenMode, setIsZenMode] = useState(false);
+            const [timer, setTimer] = useState(1500);
+            const [isTimerRunning, setIsTimerRunning] = useState(false);
+            const timerRef = useRef(null);
+
+            // --- 3. LOGIC & HANDLERS ---
+            const selectedDateKey = formatDateKey(selectedDate);
+            const thaiMonths = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"];
+
+            const currentNoteKey = `${selectedDateKey}_p${notebookPage}`;
+
+            useEffect(() => {
+                setNotebookPage(1);
+            }, [selectedDateKey]);
+
+            // RPG Logic
+            const gainXP = (amount) => {
+                let newXp = player.xp + amount;
+                let newLevel = player.level;
+                let newMaxXp = player.maxXp;
+                let newHp = player.hp;
+
+                if (newXp >= player.maxXp) {
+                newLevel += 1;
+                newXp = newXp - player.maxXp;
+                newMaxXp = Math.floor(newMaxXp * 1.5);
+                newHp = player.maxHp; 
+                alert(`🎉 เลเวลอัป! ตอนนี้คุณอยู่ที่เลเวล ${newLevel} แล้ว!`);
+                }
+
+                setPlayer({ ...player, xp: newXp, level: newLevel, maxXp: newMaxXp, hp: newHp });
+            };
+
+            const takeDamage = (amount) => {
+                let newHp = Math.max(0, player.hp - amount);
+                if (newHp === 0) {
+                alert("💀 จบเกม... ล้อเล่นน่า กลับไปทำงานต่อเถอะ!");
+                newHp = 10;
+                }
+                setPlayer({ ...player, hp: newHp });
+            };
+
+            // Task Handlers
+            const addTask = (text, time = null, category = 'normal') => { 
+                if (!text.trim()) return;
+                
+                const newTask = { id: Date.now(), text, completed: false, category, time };
+                const current = tasks[selectedDateKey] || [];
+                setTasks({ ...tasks, [selectedDateKey]: [...current, newTask] });
+
+                if (time && time !== 'no-time') {
+                const currentBlocks = timeBlocks[selectedDateKey] || {};
+                const existingNote = currentBlocks[time] || '';
+                const newNote = existingNote ? `${existingNote}, ${text}` : text;
+                
+                setTimeBlocks({ 
+                    ...timeBlocks, 
+                    [selectedDateKey]: { ...currentBlocks, [time]: newNote } 
+                });
+                }
+            };
+
+            const toggleTask = (id) => {
+                const current = tasks[selectedDateKey] || [];
+                const task = current.find(t => t.id === id);
+                const updated = current.map(t => t.id === id ? { ...t, completed: !t.completed } : t);
+                
+                if (!task.completed) {
+                gainXP(10); 
+                } else {
+                setPlayer(p => ({ ...p, xp: Math.max(0, p.xp - 10) }));
+                }
+                
+                setTasks({ ...tasks, [selectedDateKey]: updated });
+            };
+
+            const deleteTask = (id) => {
+                const current = tasks[selectedDateKey] || [];
+                setTasks({ ...tasks, [selectedDateKey]: current.filter(t => t.id !== id) });
+            };
+
+            // Time Block Handler
+            const updateTimeBlock = (hour, value) => {
+                const currentBlocks = timeBlocks[selectedDateKey] || {};
+                setTimeBlocks({ ...timeBlocks, [selectedDateKey]: { ...currentBlocks, [hour]: value } });
+            };
+
+            // Timer Logic
+            useEffect(() => {
+                if (isTimerRunning && timer > 0) {
+                timerRef.current = setTimeout(() => setTimer(t => t - 1), 1000);
+                } else if (timer === 0 && isTimerRunning) {
+                setIsTimerRunning(false);
+                gainXP(50);
+                alert("🧘 ฝึกสมาธิเสร็จสิ้น! +50 XP");
+                }
+                return () => clearTimeout(timerRef.current);
+            }, [isTimerRunning, timer]);
+
+            // --- 4. SUB-COMPONENTS (INLINE) ---
+
+            const TaskInputBar = ({ onAdd, placeholder, compact = false, category = 'normal' }) => {
+                const [text, setText] = useState('');
+                const [time, setTime] = useState('no-time');
+
+                const handleAdd = () => {
+                if(!text.trim()) return;
+                onAdd(text, time === 'no-time' ? null : time, category);
+                setText('');
+                setTime('no-time');
+                };
+
+                return (
+                <div className={`flex gap-2 mb-4 ${compact ? 'flex-col' : ''}`}>
+                    <div className={`flex-1 flex gap-2 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-2 transition-all focus-within:ring-2 focus-within:ring-indigo-500 items-center`}>
+                        <input 
+                        type="text" 
+                        placeholder={placeholder}
+                        value={text}
+                        onChange={(e) => setText(e.target.value)}
+                        className="flex-1 bg-transparent outline-none px-2 text-sm w-full"
+                        onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
+                        />
+                        <div className="flex items-center border-l pl-2 border-gray-300 dark:border-gray-600 flex-shrink-0">
+                        <Clock size={16} className="text-gray-400 mr-1"/>
+                        <select 
+                            value={time}
+                            onChange={(e) => setTime(e.target.value)}
+                            className="bg-transparent text-xs font-medium text-gray-500 outline-none cursor-pointer max-w-[80px]"
+                        >
+                            <option value="no-time">ไม่ระบุ</option>
+                            {HOURS.map(h => (
+                                <option key={h} value={h}>{h}</option>
+                            ))}
+                        </select>
+                        </div>
+                    </div>
+                    <button 
+                        onClick={handleAdd}
+                        className={`bg-indigo-600 text-white p-3 rounded-xl hover:bg-indigo-700 shadow-lg shadow-indigo-200 flex items-center justify-center ${compact ? 'w-full py-2' : ''}`}
+                    >
+                        <Plus size={compact ? 18 : 24}/>
+                    </button>
+                </div>
+                );
+            };
+
+            const DrawingPad = ({ className, storageKey, penColor, penSize }) => {
+                const canvasRef = useRef(null);
+                const [isDrawing, setIsDrawing] = useState(false);
+                const contextRef = useRef(null);
+
+                useEffect(() => {
+                const canvas = canvasRef.current;
+                const rect = canvas.parentElement.getBoundingClientRect();
+                
+                canvas.width = rect.width * 2;
+                canvas.height = rect.height * 2;
+                canvas.style.width = `${rect.width}px`;
+                canvas.style.height = `${rect.height}px`;
+
+                const context = canvas.getContext("2d");
+                context.scale(2, 2);
+                context.lineCap = "round";
+                context.lineJoin = "round";
+                contextRef.current = context;
+
+                if (drawings[storageKey]) {
+                    const image = new Image();
+                    image.src = drawings[storageKey];
+                    image.onload = () => context.drawImage(image, 0, 0, rect.width, rect.height);
+                }
+                }, [storageKey]); 
+
+                useEffect(() => {
+                if (contextRef.current) {
+                    contextRef.current.strokeStyle = penColor;
+                    contextRef.current.lineWidth = penSize;
+                }
+                }, [penColor, penSize]);
+
+                const startDrawing = ({ nativeEvent }) => {
+                const { offsetX, offsetY } = nativeEvent;
+                contextRef.current.beginPath();
+                contextRef.current.moveTo(offsetX, offsetY);
+                setIsDrawing(true);
+                };
+
+                const finishDrawing = () => {
+                contextRef.current.closePath();
+                setIsDrawing(false);
+                saveDrawing();
+                };
+
+                const draw = ({ nativeEvent }) => {
+                if (!isDrawing) return;
+                const { offsetX, offsetY } = nativeEvent;
+                contextRef.current.lineTo(offsetX, offsetY);
+                contextRef.current.stroke();
+                };
+
+                const saveDrawing = () => {
+                const canvas = canvasRef.current;
+                const dataUrl = canvas.toDataURL();
+                setDrawings({ ...drawings, [storageKey]: dataUrl });
+                };
+
+                const clearCanvas = () => {
+                const canvas = canvasRef.current;
+                const context = canvas.getContext("2d");
+                context.clearRect(0, 0, canvas.width, canvas.height);
+                setDrawings({ ...drawings, [storageKey]: null });
+                };
+
+                return (
+                <div className={`relative bg-white dark:bg-gray-800 rounded-2xl border-2 border-dashed border-gray-300 dark:border-gray-600 overflow-hidden touch-none ${className || 'h-64 sm:h-80'}`}>
+                    <canvas
+                    onMouseDown={startDrawing}
+                    onMouseUp={finishDrawing}
+                    onMouseMove={draw}
+                    onTouchStart={(e) => {
+                        const touch = e.touches[0];
+                        const bcr = e.target.getBoundingClientRect();
+                        startDrawing({ nativeEvent: { offsetX: touch.clientX - bcr.left, offsetY: touch.clientY - bcr.top } });
+                    }}
+                    onTouchMove={(e) => {
+                        const touch = e.touches[0];
+                        const bcr = e.target.getBoundingClientRect();
+                        draw({ nativeEvent: { offsetX: touch.clientX - bcr.left, offsetY: touch.clientY - bcr.top } });
+                    }}
+                    onTouchEnd={finishDrawing}
+                    ref={canvasRef}
+                    className="w-full h-full cursor-crosshair"
+                    />
+                    <button onClick={clearCanvas} className="absolute top-2 right-2 p-2 bg-rose-500 text-white rounded-lg shadow-md hover:bg-rose-600 z-10"><Trash2 size={16}/></button>
+                    <div className="absolute bottom-2 left-2 text-xs text-gray-400 pointer-events-none">วาดเพื่อบันทึกไอเดีย</div>
+                </div>
+                );
+            };
+
+            const EisenhowerMatrix = () => {
+                const categories = [
+                { id: 'q1', title: '🔥 ทำทันที (Do)', desc: 'ด่วน & สำคัญ', color: 'bg-rose-100 dark:bg-rose-900/30 border-rose-200 text-rose-700 dark:text-rose-300' },
+                { id: 'q2', title: '📅 วางแผน (Schedule)', desc: 'ไม่ด่วน แต่สำคัญ', color: 'bg-blue-100 dark:bg-blue-900/30 border-blue-200 text-blue-700 dark:text-blue-300' },
+                { id: 'q3', title: '🗣️ กระจายงาน (Delegate)', desc: 'ด่วน แต่ไม่สำคัญ', color: 'bg-amber-100 dark:bg-amber-900/30 border-amber-200 text-amber-700 dark:text-amber-300' },
+                { id: 'q4', title: '🗑️ ลด/ทิ้ง (Delete)', desc: 'ไม่ด่วน & ไม่สำคัญ', color: 'bg-gray-100 dark:bg-gray-800 border-gray-200 text-gray-500' },
+                ];
+
+                const [qInputs, setQInputs] = useState({ q1: '', q2: '', q3: '', q4: '' });
+                const [qTimes, setQTimes] = useState({ q1: 'no-time', q2: 'no-time', q3: 'no-time', q4: 'no-time' });
+
+                const addMatrixTaskLocal = (cat) => {
+                addTask(qInputs[cat], qTimes[cat] === 'no-time' ? null : qTimes[cat], cat);
+                setQInputs({ ...qInputs, [cat]: '' });
+                setQTimes({ ...qTimes, [cat]: 'no-time' });
+                };
+
+                return (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 h-full overflow-y-auto pb-20">
+                    {categories.map(cat => (
+                    <div key={cat.id} className={`p-4 rounded-2xl border ${cat.color} min-h-[200px] flex flex-col`}>
+                        <h3 className="font-bold text-sm mb-1">{cat.title}</h3>
+                        <p className="text-xs opacity-70 mb-3">{cat.desc}</p>
+                        
+                        <div className="flex-1 space-y-2 mb-3">
+                        {tasks[selectedDateKey]?.filter(t => t.category === cat.id).map(t => (
+                            <div key={t.id} className="flex items-center gap-2 bg-white dark:bg-gray-900/50 p-2 rounded-lg shadow-sm">
+                            <button onClick={() => toggleTask(t.id)}>{t.completed ? <CheckCircle size={16} className="text-emerald-500"/> : <Circle size={16}/>}</button>
+                            <span className={`text-xs flex-1 ${t.completed ? 'line-through opacity-50' : ''}`}>
+                                {t.time && <span className="text-[10px] bg-indigo-100 text-indigo-700 dark:bg-indigo-900 px-1 rounded mr-1">{t.time}</span>}
+                                {t.text}
+                            </span>
+                            <button onClick={() => deleteTask(t.id)} className="text-gray-400 hover:text-red-500"><Trash2 size={12}/></button>
+                            </div>
+                        ))}
+                        </div>
+
+                        <div className="flex gap-1 items-center bg-white dark:bg-gray-900/50 p-1 rounded-lg border border-transparent focus-within:border-indigo-400">
+                        <input 
+                            className="flex-1 text-xs p-1 outline-none bg-transparent"
+                            placeholder="เพิ่มงาน..."
+                            value={qInputs[cat.id]}
+                            onChange={e => setQInputs({ ...qInputs, [cat.id]: e.target.value })}
+                            onKeyDown={e => e.key === 'Enter' && addMatrixTaskLocal(cat.id)}
+                        />
+                        <select 
+                            value={qTimes[cat.id]}
+                            onChange={(e) => setQTimes({ ...qTimes, [cat.id]: e.target.value })}
+                            className="bg-transparent text-[10px] text-gray-500 outline-none cursor-pointer max-w-[50px]"
+                        >
+                            <option value="no-time">--:--</option>
+                            {HOURS.map(h => (
+                                <option key={h} value={h}>{h}</option>
+                            ))}
+                        </select>
+                        <button onClick={() => addMatrixTaskLocal(cat.id)} className="p-1.5 bg-gray-100 dark:bg-gray-700 rounded hover:bg-gray-200"><Plus size={14}/></button>
+                        </div>
+                    </div>
+                    ))}
+                </div>
+                );
+            };
+
+            // --- 5. MAIN RENDER ---
+            return (
+                <div className={`min-h-screen font-sans transition-colors duration-300 flex flex-col ${isDarkMode ? 'bg-gray-900 text-gray-100' : 'bg-slate-50 text-slate-800'}`}>
+                
+                {/* --- ZEN MODE OVERLAY --- */}
+                {isZenMode && (
+                    <div className="fixed inset-0 z-50 bg-gray-900 flex flex-col items-center justify-center text-white animate-in fade-in duration-500">
+                    <div className="absolute inset-0 opacity-20 bg-[url('https://images.unsplash.com/photo-1518173946687-a4c8892bbd9f?q=80&w=2560&auto=format&fit=crop')] bg-cover bg-center"></div>
+                    <div className="relative z-10 text-center">
+                        <h2 className="text-sm uppercase tracking-[0.3em] text-emerald-400 mb-8">โหมดฝึกสมาธิ (Zen Mode)</h2>
+                        <div className="text-8xl md:text-9xl font-thin font-mono mb-12 tracking-tighter">
+                            {Math.floor(timer / 60).toString().padStart(2, '0')}:{ (timer % 60).toString().padStart(2, '0') }
+                        </div>
+                        
+                        <div className="flex items-center justify-center gap-8">
+                            <button 
+                            onClick={() => setIsTimerRunning(!isTimerRunning)}
+                            className={`w-20 h-20 rounded-full flex items-center justify-center border-2 transition-all ${isTimerRunning ? 'border-rose-400 text-rose-400 hover:bg-rose-400/10' : 'border-emerald-400 text-emerald-400 hover:bg-emerald-400/10'}`}
+                            >
+                            {isTimerRunning ? <Pause size={32}/> : <Play size={32} className="ml-2"/>}
+                            </button>
+                            <button 
+                            onClick={() => setIsZenMode(false)}
+                            className="w-16 h-16 rounded-full border-2 border-gray-600 text-gray-400 flex items-center justify-center hover:border-gray-400 hover:text-white transition-all"
+                            >
+                            <X size={24}/>
+                            </button>
+                        </div>
+                        <p className="mt-12 text-gray-500 italic">"อย่าจมอยู่กับอดีต อย่าเพ้อฝันถึงอนาคต จงตั้งจิตอยู่ที่ปัจจุบัน"</p>
+                    </div>
+                    </div>
+                )}
+
+                {/* --- TOP RPG BAR --- */}
+                <div className={`${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} border-b px-4 py-3 sticky top-0 z-30 shadow-sm`}>
+                    <div className="max-w-7xl mx-auto flex justify-between items-center">
+                    
+                    {/* Player Stats */}
+                    <div className="flex items-center gap-4 flex-1">
+                        <div className="relative w-12 h-12">
+                        <div className="w-full h-full rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 flex items-center justify-center text-white font-bold text-lg shadow-lg">
+                            {player.level}
+                        </div>
+                        <div className="absolute -bottom-1 -right-1 bg-yellow-400 rounded-full p-1 border-2 border-white dark:border-gray-800">
+                            <Award size={10} className="text-yellow-900"/>
+                        </div>
+                        </div>
+                        <div className="flex-1 max-w-xs hidden sm:block">
+                        <div className="flex justify-between text-xs font-bold mb-1">
+                            <span>{player.name}</span>
+                            <span className="text-indigo-500">{player.xp}/{player.maxXp} XP</span>
+                        </div>
+                        <div className="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                            <div className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-500" style={{ width: `${(player.xp / player.maxXp) * 100}%` }}></div>
+                        </div>
+                        </div>
+                        <div className="flex items-center gap-1 text-rose-500 font-bold text-sm">
+                        <Heart size={16} fill="currentColor"/> <span>{player.hp}/{player.maxHp}</span>
+                        </div>
+                    </div>
+
+                    {/* Controls */}
+                    <div className="flex items-center gap-3">
+                        <button onClick={() => setIsZenMode(true)} className="flex items-center gap-2 px-3 py-1.5 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400 rounded-full text-xs font-bold hover:scale-105 transition-transform">
+                            <Zap size={14}/> Zen Mode
+                        </button>
+                        
+                        {/* Auth Button */}
+                        {user ? (
+                        <button onClick={handleLogout} className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300 rounded-full text-xs font-bold hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors" title="ออกจากระบบ">
+                            <img src={user.photoURL} alt="User" className="w-4 h-4 rounded-full"/>
+                            <span className="hidden sm:inline">Logout</span>
+                            <LogOut size={14}/>
+                        </button>
+                        ) : (
+                        <button onClick={handleLogin} className="flex items-center gap-2 px-3 py-1.5 bg-indigo-600 text-white rounded-full text-xs font-bold hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-200 dark:shadow-none" title="เข้าสู่ระบบด้วย Google">
+                            <LogIn size={14}/>
+                            <span>Login</span>
+                        </button>
+                        )}
+
+                        <button onClick={() => setIsDarkMode(!isDarkMode)} className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700">
+                            {isDarkMode ? <Sun size={20}/> : <Moon size={20}/>}
+                        </button>
+                    </div>
+                    </div>
+                </div>
+
+                <main className="flex-1 max-w-7xl mx-auto w-full p-4 md:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+                    
+                    {/* --- LEFT NAVIGATION (Mobile: Bottom, Desktop: Left) --- */}
+                    <nav className="lg:col-span-1 flex lg:flex-col justify-around lg:justify-start lg:gap-6 bg-white dark:bg-gray-800 lg:bg-transparent lg:dark:bg-transparent p-2 fixed bottom-0 left-0 right-0 lg:static z-20 border-t lg:border-none shadow-lg lg:shadow-none">
+                    {[
+                        { id: 'calendar', icon: <CalendarIcon/>, label: 'ปฏิทิน' },
+                        { id: 'planner', icon: <LayoutList/>, label: 'วางแผน' },
+                        { id: 'matrix', icon: <Grid/>, label: 'แมทริกซ์' },
+                        { id: 'notebook', icon: <Book/>, label: 'สมุดบันทึก' },
+                        { id: 'rpg', icon: <User/>, label: 'โปรไฟล์' },
+                    ].map(item => (
+                        <button 
+                        key={item.id} 
+                        onClick={() => setView(item.id)}
+                        className={`flex flex-col items-center gap-1 p-2 rounded-xl transition-all ${view === item.id ? 'text-indigo-600 bg-indigo-50 dark:bg-indigo-900/30 dark:text-indigo-400 scale-110' : 'text-gray-400 hover:text-gray-600'}`}
+                        >
+                        {item.icon}
+                        <span className="text-[10px] font-bold">{item.label}</span>
+                        </button>
+                    ))}
+                    </nav>
+
+                    {/* --- CENTER CONTENT (Main Workspace) --- */}
+                    <section className="lg:col-span-11 pb-20 lg:pb-0">
+                    
+                    {/* Calendar Header (Month Nav) */}
+                    <div className="flex items-center justify-between mb-6">
+                        <div className="flex items-center gap-4 bg-white dark:bg-gray-800 p-2 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700">
+                            <button onClick={() => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth()-1, 1))} className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl"><ChevronLeft size={20}/></button>
+                            <div className="text-center w-32">
+                            <div className="font-bold text-lg">{thaiMonths[currentDate.getMonth()]}</div>
+                            <div className="text-xs text-gray-500">{currentDate.getFullYear() + 543}</div>
+                            </div>
+                            <button onClick={() => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth()+1, 1))} className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl"><ChevronRight size={20}/></button>
+                        </div>
+                        
+                        {/* Hide strip if in calendar view */}
+                        {view !== 'calendar' && (
+                        <div className="hidden md:flex gap-1 overflow-x-auto max-w-md pb-1 custom-scrollbar">
+                            {Array.from({length: new Date(currentDate.getFullYear(), currentDate.getMonth()+1, 0).getDate()}, (_, i) => i + 1).map(day => {
+                                const d = new Date(currentDate.getFullYear(), currentDate.getMonth(), day);
+                                const isSel = formatDateKey(d) === selectedDateKey;
+                                return (
+                                <button 
+                                    key={day} 
+                                    onClick={() => setSelectedDate(d)}
+                                    className={`flex-shrink-0 w-10 h-12 rounded-lg flex flex-col items-center justify-center text-xs font-bold border transition-all ${isSel ? 'bg-indigo-600 text-white border-indigo-600 shadow-lg shadow-indigo-200' : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-500 hover:border-indigo-300'}`}
+                                >
+                                    <span>{day}</span>
+                                    <span className="text-[8px] opacity-70">{['อา','จ','อ','พ','พฤ','ศ','ส'][d.getDay()]}</span>
+                                </button>
+                                )
+                            })}
+                        </div>
+                        )}
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        
+                        {/* VIEW: FULL CALENDAR + SIDE TASK LIST */}
+                        {view === 'calendar' && (
+                        <>
+                            {/* Calendar Grid - Takes 2 cols */}
+                            <div className="lg:col-span-2">
+                            <div className="w-full bg-white dark:bg-gray-800 rounded-3xl p-6 shadow-sm border border-gray-100 dark:border-gray-700 h-full">
+                                <div className="grid grid-cols-7 gap-1 mb-2 text-center text-sm font-bold text-gray-400 uppercase tracking-wider">
+                                    {['อา', 'จ', 'อ', 'พ', 'พฤ', 'ศ', 'ส'].map(d => <div key={d} className="py-2">{d}</div>)}
+                                </div>
+                                <div className="grid grid-cols-7 gap-1">
+                                    {/* Empty slots for days before first of month */}
+                                    {Array.from({length: new Date(currentDate.getFullYear(), currentDate.getMonth(), 1).getDay()}).map((_, i) => (
+                                    <div key={`empty-${i}`} className="h-24"></div>
+                                    ))}
+                                    
+                                    {/* Days */}
+                                    {Array.from({length: new Date(currentDate.getFullYear(), currentDate.getMonth()+1, 0).getDate()}, (_, i) => i + 1).map(day => {
+                                    const d = new Date(currentDate.getFullYear(), currentDate.getMonth(), day);
+                                    const dKey = formatDateKey(d);
+                                    const isSel = dKey === selectedDateKey;
+                                    const isToday = dKey === formatDateKey(new Date());
+                                    const dayTasks = tasks[dKey] || [];
+
+                                    return (
+                                        <button 
+                                        key={day}
+                                        onClick={() => setSelectedDate(d)}
+                                        className={`h-24 rounded-2xl border p-1.5 flex flex-col justify-between transition-all hover:scale-[1.02] relative
+                                            ${isSel ? 'border-indigo-500 ring-2 ring-indigo-200 dark:ring-indigo-900 bg-indigo-50 dark:bg-indigo-900/20' : 'border-gray-100 dark:border-gray-700 hover:border-indigo-300'}
+                                            ${isToday ? 'bg-amber-50 dark:bg-amber-900/10' : ''}
+                                        `}
+                                        >
+                                        <div className="flex justify-between items-start w-full">
+                                            <span className={`text-sm font-bold ${isSel ? 'text-indigo-600' : 'text-gray-700 dark:text-gray-300'}`}>{day}</span>
+                                            {isToday && <span className="text-[10px] bg-amber-200 text-amber-800 px-1.5 rounded-full font-bold">วันนี้</span>}
+                                        </div>
+                                        
+                                        {/* Dot Indicators */}
+                                        <div className="flex flex-wrap gap-1 content-end justify-end mt-1 w-full">
+                                            {dayTasks.map((t, idx) => (
+                                            <div 
+                                                key={idx} 
+                                                className={`w-2 h-2 rounded-full ${getTaskColor(t)} shadow-sm`} 
+                                                title={t.text} 
+                                            />
+                                            ))}
+                                        </div>
+                                        </button>
+                                    )
+                                    })}
+                                </div>
+                            </div>
+                            </div>
+
+                            {/* Side Panel - Takes 1 col */}
+                            <div className="lg:col-span-1">
+                            <div className="bg-white dark:bg-gray-800 rounded-3xl p-6 shadow-sm border border-gray-100 dark:border-gray-700 h-full flex flex-col">
+                                <h3 className="font-bold text-lg mb-4 text-gray-800 dark:text-gray-200 flex items-center gap-2">
+                                    <span className="text-indigo-500">{selectedDate.getDate()} {thaiMonths[selectedDate.getMonth()]}</span>
+                                </h3>
+                                
+                                {/* Compact Input */}
+                                <TaskInputBar onAdd={addTask} placeholder="เพิ่มภารกิจ..." compact={true} />
+
+                                {/* Task List */}
+                                <div className="flex-1 overflow-y-auto custom-scrollbar pr-1 space-y-2">
+                                    {!tasks[selectedDateKey]?.length && (
+                                        <div className="text-center py-10 opacity-40 text-sm">
+                                        <p>ไม่มีภารกิจในวันนี้</p>
+                                        </div>
+                                    )}
+                                    {tasks[selectedDateKey]?.map(task => (
+                                        <div key={task.id} className="flex items-center gap-3 p-3 rounded-xl border border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/20">
+                                        <button onClick={() => toggleTask(task.id)} className={task.completed ? 'text-emerald-500' : 'text-gray-400 hover:text-indigo-500'}>
+                                            {task.completed ? <CheckCircle size={18}/> : <Circle size={18}/>}
+                                        </button>
+                                        <span className={`flex-1 text-sm ${task.completed ? 'line-through text-gray-400' : ''}`}>
+                                            {task.time && <span className="text-[10px] bg-indigo-100 text-indigo-700 dark:bg-indigo-900 px-1 rounded mr-1">{task.time}</span>}
+                                            {task.text}
+                                        </span>
+                                        <button onClick={() => deleteTask(task.id)} className="text-gray-300 hover:text-rose-500"><Trash2 size={14}/></button>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                            </div>
+                        </>
+                        )}
+
+                        {/* VIEW: PLANNER */}
+                        {view === 'planner' && (
+                        <>
+                            {/* Daily Tasks & Tabs */}
+                            <div className="lg:col-span-2 space-y-4">
+                            {/* Tabs */}
+                            <div className="flex gap-2 border-b dark:border-gray-700 pb-2">
+                                {[
+                                    { id: 'tasks', label: 'งาน', icon: <CheckCircle size={16}/> },
+                                    { id: 'timeline', label: 'ตารางเวลา', icon: <Clock size={16}/> },
+                                ].map(tab => (
+                                    <button 
+                                    key={tab.id} onClick={() => setActiveTab(tab.id)}
+                                    className={`px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-bold transition-all ${activeTab === tab.id ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300' : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800'}`}
+                                    >
+                                    {tab.icon} {tab.label}
+                                    </button>
+                                ))}
+                            </div>
+
+                            {/* TAB CONTENT */}
+                            <div className="bg-white dark:bg-gray-800 rounded-3xl p-6 shadow-sm min-h-[500px] border border-gray-100 dark:border-gray-700">
+                                
+                                {/* Tasks */}
+                                {activeTab === 'tasks' && (
+                                    <div className="animate-in fade-in zoom-in-95 duration-300">
+                                    {/* Using the new TaskInputBar */}
+                                    <TaskInputBar onAdd={addTask} placeholder="เพิ่มภารกิจใหม่..." />
+                                    
+                                    <div className="space-y-3">
+                                        {!tasks[selectedDateKey]?.length && (
+                                        <div className="text-center py-20 opacity-40">
+                                            <Sword size={48} className="mx-auto mb-2"/>
+                                            <p>ไม่มีภารกิจที่ทำอยู่ การผจญภัยรอคุณอยู่!</p>
+                                        </div>
+                                        )}
+                                        {tasks[selectedDateKey]?.map(task => (
+                                        <div key={task.id} className={`group flex items-center gap-4 p-4 rounded-2xl border transition-all hover:scale-[1.01] ${task.completed ? 'bg-gray-50 dark:bg-gray-900/30 border-gray-100 opacity-60' : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 shadow-sm'}`}>
+                                            <button onClick={() => toggleTask(task.id)} className={`transition-colors ${task.completed ? 'text-emerald-500' : 'text-gray-300 hover:text-indigo-500'}`}>
+                                            {task.completed ? <CheckCircle size={24} className="fill-emerald-100 dark:fill-emerald-900"/> : <Circle size={24}/>}
+                                            </button>
+                                            <div className="flex-1">
+                                            <p className={`font-medium ${task.completed ? 'line-through text-gray-400' : ''}`}>
+                                                {task.time && <span className="text-xs bg-indigo-100 text-indigo-700 dark:bg-indigo-900 px-1.5 py-0.5 rounded mr-2 font-bold">{task.time}</span>}
+                                                {task.text}
+                                            </p>
+                                            {task.category !== 'normal' && <span className="text-[10px] uppercase font-bold tracking-wider text-indigo-400">{task.category}</span>}
+                                            </div>
+                                            <div className="text-xs font-bold text-amber-500 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
+                                            +10 XP <Trash2 size={14} className="text-gray-300 hover:text-rose-500 cursor-pointer ml-2" onClick={() => deleteTask(task.id)}/>
+                                            </div>
+                                        </div>
+                                        ))}
+                                    </div>
+                                    </div>
+                                )}
+
+                                {/* Time Blocking */}
+                                {activeTab === 'timeline' && (
+                                    <div className="animate-in fade-in zoom-in-95 duration-300 h-[500px] overflow-y-auto custom-scrollbar pr-2">
+                                    <h3 className="font-bold text-gray-400 mb-4 text-xs uppercase tracking-wider">ตารางรายชั่วโมง</h3>
+                                    <div className="space-y-1">
+                                        {Array.from({length: 16}, (_, i) => i + 6).map(hour => { // 06:00 to 21:00
+                                        const time = `${hour.toString().padStart(2, '0')}:00`;
+                                        return (
+                                            <div key={hour} className="flex gap-3 group">
+                                            <div className="w-12 text-xs font-medium text-gray-400 pt-3 text-right">{time}</div>
+                                            <div className="flex-1 relative">
+                                                <input 
+                                                    type="text"
+                                                    placeholder="ว่าง"
+                                                    value={timeBlocks[selectedDateKey]?.[time] || ''}
+                                                    onChange={(e) => updateTimeBlock(time, e.target.value)}
+                                                    className={`w-full p-2.5 rounded-lg border text-sm outline-none transition-all ${timeBlocks[selectedDateKey]?.[time] ? 'bg-indigo-50 dark:bg-indigo-900/20 border-indigo-200 text-indigo-700' : 'bg-transparent border-gray-100 dark:border-gray-700 hover:border-gray-300'}`}
+                                                />
+                                            </div>
+                                            </div>
+                                        )
+                                        })}
+                                    </div>
+                                    </div>
+                                )}
+
+                            </div>
+                            </div>
+                            
+                            {/* Right Panel: RPG & Summary */}
+                            <div className="lg:col-span-1 space-y-6">
+                            {/* RPG Card */}
+                            <div className="bg-gradient-to-br from-indigo-600 to-purple-700 rounded-3xl p-6 text-white shadow-lg relative overflow-hidden">
+                                <div className="absolute top-0 right-0 p-8 opacity-10"><Sword size={120}/></div>
+                                <h3 className="text-xs font-bold opacity-70 uppercase tracking-widest mb-1">สถานะปัจจุบัน</h3>
+                                <div className="text-2xl font-bold mb-4">{player.name}</div>
+                                
+                                <div className="grid grid-cols-2 gap-4 mb-4">
+                                    <div className="bg-white/10 p-3 rounded-2xl backdrop-blur-sm">
+                                    <div className="text-xs opacity-70">เลเวล</div>
+                                    <div className="text-xl font-bold">{player.level}</div>
+                                    </div>
+                                    <div className="bg-white/10 p-3 rounded-2xl backdrop-blur-sm">
+                                    <div className="text-xs opacity-70">ต่อเนื่อง</div>
+                                    <div className="text-xl font-bold">🔥 {player.streak} วัน</div>
+                                    </div>
+                                </div>
+
+                                <div className="space-y-2">
+                                    <div className="flex justify-between text-xs font-medium">
+                                    <span>พลังชีวิต</span>
+                                    <span>{player.hp}/{player.maxHp}</span>
+                                    </div>
+                                    <div className="w-full h-1.5 bg-black/20 rounded-full overflow-hidden">
+                                    <div className="h-full bg-rose-400" style={{ width: `${(player.hp / player.maxHp) * 100}%` }}></div>
+                                    </div>
+                                    <p className="text-[10px] opacity-60 text-center pt-2">ทำภารกิจสำเร็จเพื่อรับ XP หากพลาดจะเสีย HP</p>
+                                </div>
+                            </div>
+
+                            {/* Mini Calendar/Summary */}
+                            <div className="bg-white dark:bg-gray-800 rounded-3xl p-6 border border-gray-100 dark:border-gray-700">
+                                <h3 className="font-bold mb-4 flex items-center gap-2"><Target size={18} className="text-rose-500"/> เป้าหมายประจำวัน</h3>
+                                <div className="space-y-3">
+                                    <div className="flex justify-between items-center text-sm">
+                                    <span className="text-gray-500">งานที่เสร็จ</span>
+                                    <span className="font-bold">{tasks[selectedDateKey]?.filter(t=>t.completed).length || 0}/{tasks[selectedDateKey]?.length || 0}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center text-sm">
+                                    <span className="text-gray-500">XP ที่ได้วันนี้</span>
+                                    <span className="font-bold text-amber-500">+{tasks[selectedDateKey]?.filter(t=>t.completed).length * 10} XP</span>
+                                    </div>
+                                </div>
+                            </div>
+                            </div>
+                        </>
+                        )}
+
+                        {/* VIEW: MATRIX */}
+                        {view === 'matrix' && (
+                        <div className="lg:col-span-3 h-full">
+                            <div className="bg-white dark:bg-gray-800 rounded-3xl p-6 shadow-sm min-h-[600px] border border-gray-100 dark:border-gray-700">
+                            <h2 className="text-2xl font-bold mb-2 flex items-center gap-2"><Layout className="text-indigo-500"/> Eisenhower Matrix</h2>
+                            <p className="text-gray-500 mb-6 text-sm">ตัดสินใจว่าจะทำอะไร จัดตารางเวลา มอบหมาย หรือกำจัดทิ้ง</p>
+                            <EisenhowerMatrix />
+                            </div>
+                        </div>
+                        )}
+                        
+                        {/* VIEW: NOTEBOOK */}
+                        {view === 'notebook' && (
+                        <div className="lg:col-span-3 h-full">
+                            <div className="bg-white dark:bg-gray-800 rounded-3xl p-6 shadow-sm min-h-[600px] border border-gray-100 dark:border-gray-700 flex flex-col">
+                            {/* Header with controls */}
+                            <div className="flex flex-col sm:flex-row justify-between items-center mb-4 gap-4">
+                                <div className="flex items-center gap-3 self-start sm:self-auto">
+                                    <Book className="text-indigo-500" size={28}/>
+                                    <div>
+                                        <h2 className="text-2xl font-bold">สมุดบันทึก</h2>
+                                        <div className="flex items-center gap-2 mt-1">
+                                        <span className="text-xs text-gray-400 font-medium mr-2">{selectedDate.getDate()} {thaiMonths[selectedDate.getMonth()]}</span>
+                                        <div className="flex items-center bg-gray-100 dark:bg-gray-700 rounded-full px-2 py-1">
+                                            <button 
+                                                onClick={() => setNotebookPage(p => Math.max(1, p - 1))}
+                                                className="p-1 rounded-full hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-500"
+                                            >
+                                                <ChevronLeft size={14}/>
+                                            </button>
+                                            <span className="text-xs font-bold mx-2 w-12 text-center select-none">หน้า {notebookPage}</span>
+                                            <button 
+                                                onClick={() => setNotebookPage(p => p + 1)}
+                                                className="p-1 rounded-full hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-500"
+                                            >
+                                                <ChevronRight size={14}/>
+                                            </button>
+                                        </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div className="flex flex-col items-end gap-2 self-end sm:self-auto">
+                                    {/* Controls Row */}
+                                    {notebookMode === 'text' && (
+                                    <div className="flex items-center gap-4 bg-gray-50 dark:bg-gray-900/50 p-2 rounded-xl border border-gray-100 dark:border-gray-700">
+                                        
+                                        {/* Background Color Group */}
+                                        <div className="flex items-center gap-2 border-r pr-4 border-gray-200 dark:border-gray-600">
+                                            <span className="text-[10px] text-gray-400 font-bold uppercase hidden md:block">พื้นหลัง</span>
+                                            <div className="flex items-center gap-1">
+                                            {notebookPalette.map((c, idx) => (
+                                                <button 
+                                                key={idx}
+                                                onClick={() => {
+                                                    setNotebookColor(c);
+                                                    setActivePaletteIndex(idx);
+                                                }}
+                                                className={`w-5 h-5 rounded-full border border-gray-300 transition-transform ${activePaletteIndex === idx ? 'scale-125 ring-2 ring-indigo-500 z-10' : 'hover:scale-110'}`}
+                                                style={{ backgroundColor: c }}
+                                                />
+                                            ))}
+                                            <label className="w-5 h-5 rounded-full border border-gray-300 cursor-pointer overflow-hidden relative flex items-center justify-center bg-gradient-to-tr from-blue-400 via-purple-400 to-red-400 shadow-sm hover:scale-110 transition-transform">
+                                                <input 
+                                                type="color" 
+                                                className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
+                                                value={notebookColor}
+                                                onChange={(e) => {
+                                                    const newColor = e.target.value;
+                                                    setNotebookColor(newColor);
+                                                    if (activePaletteIndex !== null) {
+                                                    const newPalette = [...notebookPalette];
+                                                    newPalette[activePaletteIndex] = newColor;
+                                                    setNotebookPalette(newPalette);
+                                                    }
+                                                }}
+                                                />
+                                            </label>
+                                            </div>
+                                        </div>
+
+                                        {/* Text Style Group */}
+                                        <div className="flex items-center gap-3">
+                                            <span className="text-[10px] text-gray-400 font-bold uppercase hidden md:block">ตัวอักษร</span>
+                                            
+                                            {/* Size Selector */}
+                                            <div className="flex bg-gray-200 dark:bg-gray-700 rounded-lg p-0.5">
+                                            {FONT_SIZES.map((size) => (
+                                                <button
+                                                    key={size.id}
+                                                    onClick={() => setNotebookFontSize(size.id)}
+                                                    className={`px-2 py-0.5 rounded text-xs font-bold transition-all ${notebookFontSize === size.id ? 'bg-white dark:bg-gray-600 shadow text-indigo-600' : 'text-gray-500 hover:text-gray-800'}`}
+                                                    style={{ fontSize: `${parseFloat(size.scale) * 0.7}rem` }}
+                                                >
+                                                    {size.label}
+                                                </button>
+                                            ))}
+                                            </div>
+
+                                            {/* Font Color Palette */}
+                                            <div className="flex items-center gap-1">
+                                            {notebookFontPalette.map((c, idx) => (
+                                                <button 
+                                                key={idx}
+                                                onClick={() => {
+                                                    setNotebookFontColor(c);
+                                                    setActiveFontPaletteIndex(idx);
+                                                }}
+                                                className={`w-5 h-5 rounded-full border border-gray-300 transition-transform ${activeFontPaletteIndex === idx ? 'scale-125 ring-2 ring-indigo-500 z-10' : 'hover:scale-110'}`}
+                                                style={{ backgroundColor: c }}
+                                                />
+                                            ))}
+                                            <label className="w-5 h-5 rounded-full border border-gray-300 cursor-pointer overflow-hidden relative flex items-center justify-center bg-gradient-to-tr from-green-400 via-yellow-400 to-orange-400 shadow-sm hover:scale-110 transition-transform">
+                                                <input 
+                                                type="color" 
+                                                className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
+                                                value={notebookFontColor}
+                                                onChange={(e) => {
+                                                    const newColor = e.target.value;
+                                                    setNotebookFontColor(newColor);
+                                                    if (activeFontPaletteIndex !== null) {
+                                                    const newPalette = [...notebookFontPalette];
+                                                    newPalette[activeFontPaletteIndex] = newColor;
+                                                    setNotebookFontPalette(newPalette);
+                                                    }
+                                                }}
+                                                />
+                                                <Type size={10} className="text-white drop-shadow-md"/>
+                                            </label>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    )}
+
+                                    {/* Controls Row for DRAWING */}
+                                    {notebookMode === 'draw' && (
+                                    <div className="flex items-center gap-4 bg-gray-50 dark:bg-gray-900/50 p-2 rounded-xl border border-gray-100 dark:border-gray-700">
+                                        
+                                        {/* Pen Size Group */}
+                                        <div className="flex items-center gap-2 border-r pr-4 border-gray-200 dark:border-gray-600">
+                                            <span className="text-[10px] text-gray-400 font-bold uppercase hidden md:block">ขนาด</span>
+                                            <div className="flex bg-gray-200 dark:bg-gray-700 rounded-lg p-0.5">
+                                            {PEN_SIZES.map((size) => (
+                                                <button
+                                                    key={size.id}
+                                                    onClick={() => setPenSize(size.id)}
+                                                    className={`px-2 py-0.5 rounded text-xs font-bold transition-all ${penSize === size.id ? 'bg-white dark:bg-gray-600 shadow text-indigo-600' : 'text-gray-500 hover:text-gray-800'}`}
+                                                >
+                                                    {size.label}
+                                                </button>
+                                            ))}
+                                            </div>
+                                        </div>
+
+                                        {/* Pen Color Group */}
+                                        <div className="flex items-center gap-3">
+                                            <span className="text-[10px] text-gray-400 font-bold uppercase hidden md:block">สีปากกา</span>
+                                            <div className="flex items-center gap-1">
+                                            {penPalette.map((c, idx) => (
+                                                <button 
+                                                key={idx}
+                                                onClick={() => {
+                                                    setPenColor(c);
+                                                    setActivePenPaletteIndex(idx);
+                                                }}
+                                                className={`w-5 h-5 rounded-full border border-gray-300 transition-transform ${activePenPaletteIndex === idx ? 'scale-125 ring-2 ring-indigo-500 z-10' : 'hover:scale-110'}`}
+                                                style={{ backgroundColor: c }}
+                                                />
+                                            ))}
+                                            <label className="w-5 h-5 rounded-full border border-gray-300 cursor-pointer overflow-hidden relative flex items-center justify-center bg-gradient-to-tr from-pink-400 via-purple-400 to-indigo-400 shadow-sm hover:scale-110 transition-transform">
+                                                <input 
+                                                type="color" 
+                                                className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
+                                                value={penColor}
+                                                onChange={(e) => {
+                                                    const newColor = e.target.value;
+                                                    setPenColor(newColor);
+                                                    if (activePenPaletteIndex !== null) {
+                                                    const newPalette = [...penPalette];
+                                                    newPalette[activePenPaletteIndex] = newColor;
+                                                    setPenPalette(newPalette);
+                                                    }
+                                                }}
+                                                />
+                                                <PenTool size={10} className="text-white drop-shadow-md"/>
+                                            </label>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    )}
+
+                                    <div className="flex bg-gray-100 dark:bg-gray-700 rounded-lg p-1 self-end">
+                                        <button onClick={() => setNotebookMode('text')} className={`px-4 py-2 rounded-md text-sm font-bold transition-all ${notebookMode === 'text' ? 'bg-white dark:bg-gray-600 shadow-sm text-indigo-600 dark:text-indigo-400' : 'text-gray-500 hover:text-gray-700'}`}>ข้อความ</button>
+                                        <button onClick={() => setNotebookMode('draw')} className={`px-4 py-2 rounded-md text-sm font-bold transition-all ${notebookMode === 'draw' ? 'bg-white dark:bg-gray-600 shadow-sm text-indigo-600 dark:text-indigo-400' : 'text-gray-500 hover:text-gray-700'}`}>วาดเขียน</button>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            {notebookMode === 'text' ? (
+                                <div className="flex-1 relative flex shadow-md rounded-2xl overflow-hidden">
+                                    {/* Paper Area */}
+                                    <div 
+                                    className="flex-1 transition-colors duration-300 relative"
+                                    style={{ backgroundColor: notebookColor }}
+                                    >
+                                    {/* Inner Shadow for depth */}
+                                    <div className="absolute inset-0 pointer-events-none shadow-[inset_0_0_20px_rgba(0,0,0,0.05)]"></div>
+                                    
+                                    <textarea
+                                        className={`flex-1 w-full h-full bg-transparent p-8 resize-none outline-none leading-relaxed ${notebookFontSize}`}
+                                        style={{ color: notebookFontColor }}
+                                        placeholder="บันทึกเรื่องราวของคุณวันนี้..."
+                                        value={notes[currentNoteKey] || ''}
+                                        onChange={(e) => setNotes({...notes, [currentNoteKey]: e.target.value})}
+                                    />
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="flex-1 border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden relative bg-gray-50 dark:bg-gray-900/30">
+                                    <DrawingPad 
+                                        className="w-full h-full absolute inset-0"
+                                        storageKey={currentNoteKey} 
+                                        penColor={penColor}
+                                        penSize={penSize}
+                                    /> 
+                                </div>
+                            )}
+                            </div>
+                        </div>
+                        )}
+
+                        {/* VIEW: PROFILE (RPG) */}
+                        {view === 'rpg' && (
+                        <div className="lg:col-span-3">
+                            <div className="bg-white dark:bg-gray-800 rounded-3xl p-8 text-center shadow-sm border border-gray-100 dark:border-gray-700 min-h-[500px] flex flex-col items-center justify-center">
+                                <div className="w-32 h-32 bg-gradient-to-tr from-indigo-500 to-pink-500 rounded-full flex items-center justify-center text-5xl font-bold text-white mb-6 shadow-xl ring-4 ring-indigo-100 dark:ring-indigo-900">
+                                {player.level}
+                                </div>
+                                <h2 className="text-3xl font-bold mb-2">{player.name}</h2>
+                                <p className="text-indigo-500 font-medium mb-8">ฮีโร่ผู้มีประสิทธิผล</p>
+
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full max-w-2xl">
+                                <div className="p-6 bg-gray-50 dark:bg-gray-900 rounded-2xl">
+                                    <Sword className="mx-auto mb-3 text-indigo-500" size={32}/>
+                                    <div className="text-2xl font-bold">{player.xp}</div>
+                                    <div className="text-xs text-gray-500 uppercase tracking-widest">XP ทั้งหมด</div>
+                                </div>
+                                <div className="p-6 bg-gray-50 dark:bg-gray-900 rounded-2xl">
+                                    <Heart className="mx-auto mb-3 text-rose-500" size={32}/>
+                                    <div className="text-2xl font-bold">{player.hp}</div>
+                                    <div className="text-xs text-gray-500 uppercase tracking-widest">พลังชีวิตปัจจุบัน</div>
+                                </div>
+                                <div className="p-6 bg-gray-50 dark:bg-gray-900 rounded-2xl">
+                                    <Shield className="mx-auto mb-3 text-emerald-500" size={32}/>
+                                    <div className="text-2xl font-bold">{player.level * 10}%</div>
+                                    <div className="text-xs text-gray-500 uppercase tracking-widest">บัฟการทำงาน</div>
+                                </div>
+                                </div>
+                                
+                                <button onClick={() => {
+                                const newName = prompt("ใส่ชื่อฮีโร่ใหม่:", player.name);
+                                if(newName) setPlayer({...player, name: newName});
+                                }} className="mt-8 text-gray-400 hover:text-indigo-500 text-sm underline">แก้ไขชื่อฮีโร่</button>
+                            </div>
+                        </div>
+                        )}
+
+                    </div>
+                    </section>
+                </main>
+
+                <style>{`
+                    .custom-scrollbar::-webkit-scrollbar { width: 4px; height: 4px; }
+                    .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+                    .custom-scrollbar::-webkit-scrollbar-thumb { background-color: #cbd5e1; border-radius: 20px; }
+                `}</style>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<OmniPlan />);
+    </script>
+</body>
+</html>
