@@ -989,7 +989,8 @@
                 </div>
 
                 <main className="flex-1 max-w-7xl mx-auto w-full p-4 md:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
-                    <nav className="lg:col-span-1 flex lg:flex-col justify-around lg:justify-start lg:gap-6 bg-white dark:bg-gray-800 lg:bg-transparent lg:dark:bg-transparent p-2 fixed bottom-0 left-0 right-0 lg:static z-20 border-t lg:border-none shadow-lg lg:shadow-none">
+                    {/* แก้ไขส่วน nav ให้รองรับการ Scroll แนวนอนในมือถือ */}
+                    <nav className="lg:col-span-1 flex lg:flex-col overflow-x-auto custom-scrollbar lg:overflow-visible justify-start lg:justify-start gap-4 lg:gap-6 bg-white dark:bg-gray-800 lg:bg-transparent lg:dark:bg-transparent p-3 fixed bottom-0 left-0 right-0 lg:static z-20 border-t lg:border-none shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] lg:shadow-none">
                     {[
                         { id: 'calendar', icon: <CalendarIcon/>, label: 'ปฏิทิน' },
                         { id: 'planner', icon: <LayoutList/>, label: 'วางแผน' },
@@ -998,11 +999,14 @@
                         { id: 'portal', icon: <Globe/>, label: 'คลังแอพ' },
                         { id: 'rpg', icon: <User/>, label: 'โปรไฟล์' },
                     ].map(item => (
-                        <button key={item.id} onClick={() => setView(item.id)} className={`flex flex-col items-center gap-1 p-2 rounded-xl transition-all ${view === item.id ? 'text-indigo-600 bg-indigo-50 dark:bg-indigo-900/30 dark:text-indigo-400 scale-110' : 'text-gray-400 hover:text-gray-600'}`}>{item.icon}<span className="text-[10px] font-bold">{item.label}</span></button>
+                        <button key={item.id} onClick={() => setView(item.id)} className={`flex-shrink-0 min-w-[60px] flex flex-col items-center gap-1 p-2 rounded-xl transition-all ${view === item.id ? 'text-indigo-600 bg-indigo-50 dark:bg-indigo-900/30 dark:text-indigo-400 scale-105 font-bold' : 'text-gray-400 hover:text-gray-600'}`}>
+                            {item.icon}
+                            <span className="text-[10px] whitespace-nowrap">{item.label}</span>
+                        </button>
                     ))}
                     </nav>
 
-                    <section className="lg:col-span-11 pb-20 lg:pb-0">
+                    <section className="lg:col-span-11 pb-24 lg:pb-0">
                     <div className="flex items-center justify-between mb-6">
                         <div className="flex items-center gap-4 bg-white dark:bg-gray-800 p-2 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700">
                             <button onClick={() => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth()-1, 1))} className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl"><ChevronLeft size={20}/></button>
