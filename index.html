@@ -73,7 +73,8 @@
             PenTool, Clock, Grid, Layout, X, Play, Pause, RotateCcw,
             Volume2, VolumeX, Save, Moon, Sun, Sword, Heart, Shield,
             MoreHorizontal, AlertCircle, LayoutList, Book, Palette, Type, LogOut, LogIn,
-            ZoomIn, ZoomOut, Maximize, Image as ImageIcon, FileDown, Download
+            ZoomIn, ZoomOut, Maximize, Image as ImageIcon, FileDown, Download,
+            RefreshCw, Link as LinkIcon, Cloud
         } from 'lucide-react';
 
         import { initializeApp } from "firebase/app";
@@ -177,6 +178,7 @@
 
             // --- AUTHENTICATION STATE ---
             const [user, setUser] = useState(null);
+            const [gCalToken, setGCalToken] = useState(null); // Google API Access Token
 
             useEffect(() => {
                 const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -188,7 +190,15 @@
             const handleLogin = async () => {
                 try {
                     const provider = new GoogleAuthProvider();
-                    await signInWithPopup(auth, provider);
+                    // Add scope for Google Calendar
+                    provider.addScope('https://www.googleapis.com/auth/calendar');
+                    
+                    const result = await signInWithPopup(auth, provider);
+                    // Get the Google Access Token
+                    const credential = GoogleAuthProvider.credentialFromResult(result);
+                    const token = credential.accessToken;
+                    setGCalToken(token); // Store token in state for API calls
+                    
                 } catch (error) {
                     console.error("Login failed:", error);
                     alert(`การเข้าสู่ระบบล้มเหลว: ${error.message}\n\nกรุณาตรวจสอบ:\n1. เพิ่ม Domain นี้ใน Firebase Console > Authentication > Settings > Authorized domains\n2. เปิดใช้งาน Google Sign-in method`);
@@ -197,6 +207,7 @@
 
             const handleLogout = () => {
                 signOut(auth);
+                setGCalToken(null);
             };
 
             // --- CUSTOM HOOK ---
@@ -253,6 +264,7 @@
 
             const getTaskColor = (task) => {
                 if (task.completed) return 'bg-emerald-500';
+                if (task.category === 'google') return 'bg-sky-500'; // Google Event Color
                 switch (task.category) {
                 case 'q1': return 'bg-rose-500'; 
                 case 'q2': return 'bg-blue-500'; 
@@ -269,6 +281,7 @@
             const [isDarkMode, setIsDarkMode] = useUserData('omni_theme', false);
             const [activeTab, setActiveTab] = useState('tasks'); 
             const [zoom, setZoom] = useState(1.0); 
+            const [isSyncing, setIsSyncing] = useState(false);
 
             // Data
             const [tasks, setTasks] = useUserData('omni_tasks', {});
@@ -325,6 +338,128 @@
             const currentNoteKey = `${selectedDateKey}_p${notebookPage}`;
 
             useEffect(() => { setNotebookPage(1); }, [selectedDateKey]);
+
+            // --- GOOGLE CALENDAR LOGIC ---
+
+            // Sync Events FROM Google TO OmniPlan
+            const syncFromGoogle = async () => {
+                if (!gCalToken) {
+                    // Try to re-login to get token if missing
+                    handleLogin();
+                    return;
+                }
+
+                setIsSyncing(true);
+                try {
+                    // Fetch events for current month view (start of month to end of month)
+                    const startOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
+                    const endOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0);
+                    
+                    const response = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${startOfMonth.toISOString()}&timeMax=${endOfMonth.toISOString()}&singleEvents=true`, {
+                        headers: { Authorization: `Bearer ${gCalToken}` }
+                    });
+
+                    if (!response.ok) throw new Error("Failed to fetch Google Calendar");
+
+                    const data = await response.json();
+                    const googleEvents = data.items || [];
+
+                    // Process and Merge Data
+                    const newTasks = { ...tasks };
+
+                    googleEvents.forEach(evt => {
+                        const evtDate = evt.start.dateTime ? new Date(evt.start.dateTime) : new Date(evt.start.date);
+                        const dateKey = formatDateKey(evtDate);
+                        const timeStr = evt.start.dateTime ? evtDate.toTimeString().slice(0,5) : null;
+                        
+                        if (!newTasks[dateKey]) newTasks[dateKey] = [];
+
+                        // Check if event already exists to prevent duplicates (using googleEventId)
+                        const exists = newTasks[dateKey].some(t => t.googleEventId === evt.id);
+                        
+                        if (!exists) {
+                            newTasks[dateKey].push({
+                                id: Date.now() + Math.random(), // Local ID
+                                text: evt.summary || '(ไม่มีชื่อ)',
+                                completed: false,
+                                category: 'google',
+                                time: timeStr,
+                                googleEventId: evt.id // Important for tracking
+                            });
+                        }
+                    });
+
+                    setTasks(newTasks); // This triggers useUserData causing save to Firestore
+                    alert(`ซิงค์ข้อมูลสำเร็จ! ดึงมา ${googleEvents.length} รายการ`);
+
+                } catch (error) {
+                    console.error(error);
+                    alert("เกิดข้อผิดพลาดในการซิงค์ปฏิทิน");
+                } finally {
+                    setIsSyncing(false);
+                }
+            };
+
+            // Add Event TO Google
+            const addToGoogle = async (taskText, taskTime, taskDate) => {
+                if (!gCalToken) return null;
+
+                try {
+                    let startDateTime, endDateTime;
+                    
+                    if (taskTime) {
+                        // Creating ISO DateTime string
+                        const [hours, minutes] = taskTime.split(':');
+                        const start = new Date(taskDate);
+                        start.setHours(parseInt(hours), parseInt(minutes));
+                        const end = new Date(start);
+                        end.setHours(start.getHours() + 1); // Default 1 hour duration
+                        
+                        startDateTime = { dateTime: start.toISOString() };
+                        endDateTime = { dateTime: end.toISOString() };
+                    } else {
+                        // All day event
+                        const dateStr = formatDateKey(taskDate);
+                        startDateTime = { date: dateStr };
+                        endDateTime = { date: dateStr };
+                    }
+
+                    const event = {
+                        summary: taskText,
+                        start: startDateTime,
+                        end: endDateTime
+                    };
+
+                    const response = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${gCalToken}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(event)
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        return data.id; // Return Google Event ID
+                    }
+                } catch (error) {
+                    console.error("Failed to add to Google:", error);
+                }
+                return null;
+            };
+
+            const deleteFromGoogle = async (googleEventId) => {
+                if (!gCalToken || !googleEventId) return;
+                try {
+                    await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${googleEventId}`, {
+                        method: 'DELETE',
+                        headers: { Authorization: `Bearer ${gCalToken}` }
+                    });
+                } catch (error) {
+                    console.error("Failed to delete from Google:", error);
+                }
+            };
 
             // Zoom Handlers
             const handleZoomIn = () => setZoom(prev => Math.min(prev + 0.1, 3.0));
@@ -456,17 +591,33 @@
             };
 
             // Task Handlers
-            const addTask = (text, time = null, category = 'normal') => { 
+            const addTask = async (text, time = null, category = 'normal', syncToGoogle = false) => { 
                 if (!text.trim()) return;
-                const newTask = { id: Date.now(), text, completed: false, category, time };
+                
+                let googleEventId = null;
+                
+                // Add to Google Calendar if requested
+                if (syncToGoogle && gCalToken) {
+                    googleEventId = await addToGoogle(text, time === 'no-time' ? null : time, selectedDate);
+                }
+
+                const newTask = { 
+                    id: Date.now(), 
+                    text, 
+                    completed: false, 
+                    category, 
+                    time,
+                    googleEventId // Save ID to link for later deletion
+                };
+
                 const current = tasks[selectedDateKey] || [];
                 setTasks({ ...tasks, [selectedDateKey]: [...current, newTask] });
 
                 if (time && time !== 'no-time') {
-                const currentBlocks = timeBlocks[selectedDateKey] || {};
-                const existingNote = currentBlocks[time] || '';
-                const newNote = existingNote ? `${existingNote}, ${text}` : text;
-                setTimeBlocks({ ...timeBlocks, [selectedDateKey]: { ...currentBlocks, [time]: newNote } });
+                    const currentBlocks = timeBlocks[selectedDateKey] || {};
+                    const existingNote = currentBlocks[time] || '';
+                    const newNote = existingNote ? `${existingNote}, ${text}` : text;
+                    setTimeBlocks({ ...timeBlocks, [selectedDateKey]: { ...currentBlocks, [time]: newNote } });
                 }
             };
 
@@ -483,6 +634,15 @@
 
             const deleteTask = (id) => {
                 const current = tasks[selectedDateKey] || [];
+                const taskToDelete = current.find(t => t.id === id);
+                
+                // If it's a Google linked event, delete from Google too
+                if (taskToDelete && taskToDelete.googleEventId) {
+                    if (confirm("ภารกิจนี้เชื่อมต่อกับ Google Calendar คุณต้องการลบจาก Google ด้วยหรือไม่?")) {
+                        deleteFromGoogle(taskToDelete.googleEventId);
+                    }
+                }
+
                 setTasks({ ...tasks, [selectedDateKey]: current.filter(t => t.id !== id) });
             };
 
@@ -507,24 +667,35 @@
             const TaskInputBar = ({ onAdd, placeholder, compact = false, category = 'normal' }) => {
                 const [text, setText] = useState('');
                 const [time, setTime] = useState('no-time');
+                const [syncGoogle, setSyncGoogle] = useState(false); // Checkbox state
 
                 const handleAdd = () => {
-                if(!text.trim()) return;
-                onAdd(text, time === 'no-time' ? null : time, category);
-                setText('');
-                setTime('no-time');
+                    if(!text.trim()) return;
+                    onAdd(text, time === 'no-time' ? null : time, category, syncGoogle);
+                    setText('');
+                    setTime('no-time');
+                    setSyncGoogle(false);
                 };
 
                 return (
                 <div className={`flex gap-2 mb-4 ${compact ? 'flex-col' : ''}`}>
                     <div className={`flex-1 flex gap-2 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-2 transition-all focus-within:ring-2 focus-within:ring-indigo-500 items-center`}>
                         <input type="text" placeholder={placeholder} value={text} onChange={(e) => setText(e.target.value)} className="flex-1 bg-transparent outline-none px-2 text-sm w-full" onKeyDown={(e) => e.key === 'Enter' && handleAdd()} />
-                        <div className="flex items-center border-l pl-2 border-gray-300 dark:border-gray-600 flex-shrink-0">
-                        <Clock size={16} className="text-gray-400 mr-1"/>
-                        <select value={time} onChange={(e) => setTime(e.target.value)} className="bg-transparent text-xs font-medium text-gray-500 outline-none cursor-pointer max-w-[80px]">
-                            <option value="no-time">ไม่ระบุ</option>
-                            {HOURS.map(h => (<option key={h} value={h}>{h}</option>))}
-                        </select>
+                        <div className="flex items-center border-l pl-2 border-gray-300 dark:border-gray-600 flex-shrink-0 gap-2">
+                            {gCalToken && (
+                                <button 
+                                    onClick={() => setSyncGoogle(!syncGoogle)} 
+                                    className={`p-1 rounded-full transition-colors ${syncGoogle ? 'bg-sky-100 text-sky-600' : 'text-gray-400 hover:text-gray-600'}`}
+                                    title="เพิ่มลง Google Calendar"
+                                >
+                                    <Cloud size={16} />
+                                </button>
+                            )}
+                            <Clock size={16} className="text-gray-400"/>
+                            <select value={time} onChange={(e) => setTime(e.target.value)} className="bg-transparent text-xs font-medium text-gray-500 outline-none cursor-pointer max-w-[80px]">
+                                <option value="no-time">ไม่ระบุ</option>
+                                {HOURS.map(h => (<option key={h} value={h}>{h}</option>))}
+                            </select>
                         </div>
                     </div>
                     <button onClick={handleAdd} className={`bg-indigo-600 text-white p-3 rounded-xl hover:bg-indigo-700 shadow-lg shadow-indigo-200 flex items-center justify-center ${compact ? 'w-full py-2' : ''}`}><Plus size={compact ? 18 : 24}/></button>
@@ -697,8 +868,22 @@
                         </div>
                     </div>
                     <div className="flex items-center gap-3">
-                        <button onClick={() => setIsZenMode(true)} className="flex items-center gap-2 px-3 py-1.5 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400 rounded-full text-xs font-bold hover:scale-105 transition-transform"><Zap size={14}/> Zen Mode</button>
-                        {user ? (<button onClick={handleLogout} className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300 rounded-full text-xs font-bold"><img src={user.photoURL} alt="User" className="w-4 h-4 rounded-full"/><span className="hidden sm:inline">Logout</span><LogOut size={14}/></button>) : (<button onClick={handleLogin} className="flex items-center gap-2 px-3 py-1.5 bg-indigo-600 text-white rounded-full text-xs font-bold shadow-lg shadow-indigo-200"><LogIn size={14}/><span>Login</span></button>)}
+                        {user ? (
+                            <>
+                                {gCalToken ? (
+                                    <button onClick={syncFromGoogle} disabled={isSyncing} className={`flex items-center gap-2 px-3 py-1.5 bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-400 rounded-full text-xs font-bold transition-transform ${isSyncing ? 'animate-pulse' : 'hover:scale-105'}`}>
+                                        <RefreshCw size={14} className={isSyncing ? "animate-spin" : ""} />
+                                        <span className="hidden sm:inline">{isSyncing ? "กำลังซิงค์..." : "ซิงค์ปฏิทิน"}</span>
+                                    </button>
+                                ) : (
+                                    <button onClick={handleLogin} className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300 rounded-full text-xs font-bold hover:bg-gray-200" title="เชื่อมต่อ Google Calendar เพื่อซิงค์">
+                                        <LinkIcon size={14} /> <span className="hidden sm:inline">เชื่อมปฏิทิน</span>
+                                    </button>
+                                )}
+                                <button onClick={() => setIsZenMode(true)} className="flex items-center gap-2 px-3 py-1.5 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400 rounded-full text-xs font-bold hover:scale-105 transition-transform"><Zap size={14}/> Zen Mode</button>
+                                <button onClick={handleLogout} className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300 rounded-full text-xs font-bold"><img src={user.photoURL} alt="User" className="w-4 h-4 rounded-full"/><span className="hidden sm:inline">Logout</span><LogOut size={14}/></button>
+                            </>
+                        ) : (<button onClick={handleLogin} className="flex items-center gap-2 px-3 py-1.5 bg-indigo-600 text-white rounded-full text-xs font-bold shadow-lg shadow-indigo-200"><LogIn size={14}/><span>Login</span></button>)}
                         <button onClick={() => setIsDarkMode(!isDarkMode)} className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700">{isDarkMode ? <Sun size={20}/> : <Moon size={20}/>}</button>
                     </div>
                     </div>
@@ -768,7 +953,13 @@
                                     {tasks[selectedDateKey]?.map(task => (
                                         <div key={task.id} className="flex items-center gap-3 p-3 rounded-xl border border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/20">
                                         <button onClick={() => toggleTask(task.id)} className={task.completed ? 'text-emerald-500' : 'text-gray-400 hover:text-indigo-500'}>{task.completed ? <CheckCircle size={18}/> : <Circle size={18}/>}</button>
-                                        <span className={`flex-1 text-sm ${task.completed ? 'line-through text-gray-400' : ''}`}>{task.time && <span className="text-[10px] bg-indigo-100 text-indigo-700 dark:bg-indigo-900 px-1 rounded mr-1">{task.time}</span>}{task.text}</span>
+                                        <div className="flex-1 overflow-hidden">
+                                            <p className={`text-sm truncate ${task.completed ? 'line-through text-gray-400' : ''}`}>
+                                                {task.time && <span className="text-[10px] bg-indigo-100 text-indigo-700 dark:bg-indigo-900 px-1 rounded mr-1">{task.time}</span>}
+                                                {task.text}
+                                            </p>
+                                            {task.category === 'google' && <span className="text-[10px] text-sky-500 flex items-center gap-0.5"><Cloud size={10}/> Google Calendar</span>}
+                                        </div>
                                         <button onClick={() => deleteTask(task.id)} className="text-gray-300 hover:text-rose-500"><Trash2 size={14}/></button>
                                         </div>
                                     ))}
@@ -797,7 +988,10 @@
                                             <button onClick={() => toggleTask(task.id)} className={`transition-colors ${task.completed ? 'text-emerald-500' : 'text-gray-300 hover:text-indigo-500'}`}>{task.completed ? <CheckCircle size={24} className="fill-emerald-100 dark:fill-emerald-900"/> : <Circle size={24}/>}</button>
                                             <div className="flex-1">
                                             <p className={`font-medium ${task.completed ? 'line-through text-gray-400' : ''}`}>{task.time && <span className="text-xs bg-indigo-100 text-indigo-700 dark:bg-indigo-900 px-1.5 py-0.5 rounded mr-2 font-bold">{task.time}</span>}{task.text}</p>
-                                            {task.category !== 'normal' && <span className="text-[10px] uppercase font-bold tracking-wider text-indigo-400">{task.category}</span>}
+                                            <div className="flex gap-2">
+                                                {task.category !== 'normal' && <span className="text-[10px] uppercase font-bold tracking-wider text-indigo-400">{task.category}</span>}
+                                                {task.category === 'google' && <span className="text-[10px] bg-sky-100 text-sky-600 px-1.5 rounded-full font-bold flex items-center gap-1"><Cloud size={10}/> Google</span>}
+                                            </div>
                                             </div>
                                             <div className="text-xs font-bold text-amber-500 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">+10 XP <Trash2 size={14} className="text-gray-300 hover:text-rose-500 cursor-pointer ml-2" onClick={() => deleteTask(task.id)}/></div>
                                         </div>
